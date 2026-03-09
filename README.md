@@ -98,7 +98,7 @@ A visual dashboard provides insights such as:
 
 ------------------------------------------------------------------------
 
-## System Architecture
+## System Architectu
 
     Claim Data
          │
