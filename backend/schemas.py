@@ -69,3 +69,44 @@ class TrendsResponse(BaseModel):
     by_claim_type: List[TrendPoint]
     by_submission_method: List[TrendPoint]
     by_location: List[TrendPoint]
+
+# ─── Feedback submission ──────────────────────────────────────────────────────
+
+class FeedbackRequest(BaseModel):
+    claim: ClaimRequest
+    predicted_risk_score: float      = Field(..., example=78.4)
+    predicted_risk_level: str        = Field(..., example="High")
+    actual_outcome: str              = Field(..., example="Rejected")  # Rejected / Paid / Processed / Pending / In Review
+    feedback_date: Optional[str]     = Field(None, example="2023-07-01")
+
+
+class FeedbackResponse(BaseModel):
+    message: str
+    total_feedback_collected: int
+    retraining_triggered: bool
+    samples_until_retrain: int       # how many more needed before next retrain
+
+
+# ─── Retrain response ─────────────────────────────────────────────────────────
+
+class RetrainResponse(BaseModel):
+    message: str
+    model_version: str               # e.g. "v2_20230701_143022"
+    previous_accuracy: float
+    new_accuracy: float
+    training_samples: int            # total rows used for retraining
+    feedback_samples_used: int       # how many were from feedback
+    improvement: float               # new_accuracy - previous_accuracy
+
+
+# ─── Model status ─────────────────────────────────────────────────────────────
+
+class ModelStatus(BaseModel):
+    current_version: str
+    base_training_samples: int
+    feedback_samples_collected: int
+    total_training_samples: int
+    last_retrain_date: Optional[str]
+    current_accuracy: float
+    retraining_threshold: int        # retrain triggers at this many feedback samples
+    samples_until_retrain: int

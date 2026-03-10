@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { submitFeedback, triggerRetrain } from "./api";
 import { predictClaim } from "./api";
 
 const G = `
@@ -49,6 +50,7 @@ const GENDERS=["Male","Female","Non-Binary"];
 const MARITAL=["Single","Married","Divorced","Widowed","Domestic Partner"];
 const EMPLOYMENT=["Full-Time","Part-Time","Self-Employed","Unemployed","Retired","Student"];
 const SUBMISSION=["Electronic","Paper","Portal","Clearinghouse"];
+const INSURANCE_STATUS=["Approved","Pending","Partial","Under Review","Inactive"];
 const STATES=["CA","TX","NY","FL","IL","PA","OH","GA","NC","MI","NJ","VA","WA","AZ","MA","TN","IN","MO","MD","WI"];
 
 const RS={
@@ -106,7 +108,7 @@ function SecLbl({color="#3d8b5e",children}){
 }
 
 // ────────────────────────────── ENTRY PAGE
-const EMPTY={company:"",age:"",gender:"",marital:"",employment:"",income:"",claimAmount:"",claimDate:"",diagCode:"",procCode:"",specialty:"",claimType:"",location:"",submission:""};
+const EMPTY={company:"",age:"",gender:"",marital:"",employment:"",income:"",claimAmount:"",claimDate:"",diagCode:"",procCode:"",specialty:"",claimType:"",location:"",submission:"",insuranceStatus:""};
 
 function EntryPage({onSubmit}){
   const[form,setForm]=useState(EMPTY);
@@ -131,6 +133,7 @@ function EntryPage({onSubmit}){
     if(!form.specialty)missing.push("Provider Specialty");
     if(!form.location)missing.push("Provider State");
     if(!form.submission)missing.push("Submission Method");
+    if(!form.insuranceStatus)missing.push("Insurance Eligibility Status");
     if(missing.length){alert("Please fill in:\n• "+missing.join("\n• "));return;}
     setLoading(true);setResult(null);
     try{
@@ -217,7 +220,10 @@ function EntryPage({onSubmit}){
           <FG label="Employment Status ★">
             <FSel value={form.employment} onChange={set("employment")}><option value="">Select employment…</option>{EMPLOYMENT.map(e=><option key={e}>{e}</option>)}</FSel>
           </FG>
-          <FG label="Annual Income ($) ★" col={2}>
+          <FG label="Insurance Eligibility Status ★">
+            <FSel value={form.insuranceStatus} onChange={set("insuranceStatus")}><option value="">Select status…</option>{INSURANCE_STATUS.map(s=><option key={s}>{s}</option>)}</FSel>
+          </FG>
+          <FG label="Annual Income ($) ★">
             <FInp type="number" placeholder="e.g. 65000" value={form.income} onChange={set("income")}/>
           </FG>
         </div>
@@ -403,7 +409,93 @@ function EntryPage({onSubmit}){
 }
 
 // ────────────────────────────── HISTORY PAGE
-function HistoryPage({history,onClear}){
+const ACTUAL_OUTCOMES=["Paid","Rejected"];
+
+function RecordOutcomeModal({claim, onClose, onSaved, onMarkOutcome}){
+  const[outcome,sOutcome]=useState("");
+  const[date,sDate]=useState(new Date().toISOString().split("T")[0]);
+  const[loading,sLoading]=useState(false);
+  const[error,sError]=useState("");
+  const[success,sSuccess]=useState(null);
+
+  const submit=async()=>{
+    if(!outcome){sError("Please select an outcome.");return;}
+    sLoading(true);sError("");
+    try{
+      const payload={
+        claim:{
+          CompanyName:claim.company,ClaimAmount:claim.claimAmount,
+          ClaimDate:claim.claimDate||date,DiagnosisCode:claim.diagCode||"Z00.00",
+          ProcedureCode:claim.procCode||"99213",PatientAge:claim.age,
+          PatientGender:claim.gender||"Male",ProviderSpecialty:claim.specialty||"Primary Care",
+          ClaimType:claim.claimType,ClaimSubmissionMethod:claim.submission||"Electronic",
+          InsuranceStatus:claim.insuranceStatus||"Pending",PatientIncome:claim.income||50000,
+          PatientMaritalStatus:claim.marital||"Single",PatientEmploymentStatus:claim.employment||"Full-Time",
+          ProviderLocation:claim.location||"TX",
+        },
+        predicted_risk_score:claim.riskScore,
+        predicted_risk_level:claim.riskLevel,
+        actual_outcome:outcome,
+        feedback_date:date,
+      };
+      const res=await submitFeedback(payload);
+      sSuccess(res);
+      onMarkOutcome&&onMarkOutcome(claim.id, outcome, res);
+      setTimeout(()=>{onSaved(res);onClose();},2200);
+    }catch(e){sError(e.message);}
+    finally{sLoading(false);}
+  };
+
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(4px)"}}>
+      <div style={{background:"var(--card)",borderRadius:18,padding:"28px 32px",maxWidth:420,width:"90%",boxShadow:"0 24px 64px rgba(0,0,0,.22)",border:"1.5px solid #e4ddd4"}}>
+        <div style={{fontFamily:"'Playfair Display',serif",fontSize:19,color:"#1c2b22",marginBottom:4}}>Record Actual Outcome</div>
+        <div style={{fontSize:12,color:"#7a9982",marginBottom:18}}>Claim <span style={{fontFamily:"monospace",color:"#3d5247"}}>{claim.id}</span> · {claim.company}</div>
+
+        {success?(
+          <div style={{padding:"16px",background:"#eaf6f0",border:"1.5px solid #8ecfb0",borderRadius:12,textAlign:"center"}}>
+            <div style={{fontSize:15,fontWeight:700,color:"#1a5c34",marginBottom:4}}>✓ Feedback Saved</div>
+            <div style={{fontSize:12,color:"#3d5247"}}>{success.message}</div>
+            {success.retraining_triggered&&<div style={{marginTop:8,fontSize:11.5,color:"#235c38",fontWeight:600}}>🔄 Model retrained automatically!</div>}
+          </div>
+        ):(
+          <>
+            <div style={{display:"flex",flexDirection:"column",gap:14}}>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                <label style={{fontSize:10,fontWeight:700,color:"#3d5247",textTransform:"uppercase",letterSpacing:".09em"}}>Actual Outcome from Insurer ★</label>
+                <FSel value={outcome} onChange={e=>sOutcome(e.target.value)}>
+                  <option value="">Select outcome…</option>
+                  {ACTUAL_OUTCOMES.map(o=><option key={o}>{o}</option>)}
+                </FSel>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                <label style={{fontSize:10,fontWeight:700,color:"#3d5247",textTransform:"uppercase",letterSpacing:".09em"}}>Date Outcome Received</label>
+                <FInp type="date" value={date} onChange={e=>sDate(e.target.value)}/>
+              </div>
+              {error&&<div style={{padding:"9px 14px",background:"#fde6e4",border:"1.5px solid #f0a09a",borderRadius:8,fontSize:12,color:"#8f1e14"}}>{error}</div>}
+              <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:4}}>
+                <button onClick={onClose} style={{padding:"8px 20px",border:"1.5px solid #ddd6ca",borderRadius:9,background:"transparent",cursor:"pointer",fontSize:13,color:"#3d5247",fontWeight:500}}>Cancel</button>
+                <button onClick={submit} disabled={loading} style={{padding:"8px 22px",border:"none",borderRadius:9,background:"linear-gradient(135deg,#1a5c34,#2d7a4a)",cursor:loading?"not-allowed":"pointer",fontSize:13,color:"#fff",fontWeight:600,opacity:loading?.7:1,display:"flex",alignItems:"center",gap:7}}>
+                  {loading&&<span style={{width:12,height:12,border:"2px solid rgba(255,255,255,.3)",borderTopColor:"#fff",borderRadius:"50%",animation:"spin 0.7s linear infinite",display:"inline-block"}}/>}
+                  {loading?"Saving…":"Save Outcome"}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function HistoryPage({history,onClear,onDelete,onMarkOutcome,onRetrain}){
+  const[feedbackModal,sFeedbackModal]=useState(null);
+  const[savedFeedback,sSavedFeedback]=useState({});
+  const[expanded,sExpanded]=useState(null);
+  const[deleteConfirm,sDeleteConfirm]=useState(null);
+  const[retraining,sRetraining]=useState(false);
+  const[retrainResult,sRetrainResult]=useState(null);
+  const[retrainError,sRetrainError]=useState("");
   const[search,sSearch]=useState("");
   const[fRl,sFRl]=useState("All");
   const[fCo,sFCo]=useState("All");
@@ -419,6 +511,24 @@ function HistoryPage({history,onClear}){
   const low=history.filter(h=>h.riskLevel==="Low").length;
   const high=history.filter(h=>h.riskLevel==="High"||h.riskLevel==="Critical").length;
   const avgS=tot?Math.round(history.reduce((s,h)=>s+(h.riskScore||0),0)/tot):0;
+
+  const handleOutcomeSaved=(res,claimId)=>{
+    sSavedFeedback(p=>({...p,[claimId]:res.total_feedback_collected+" saved"}));
+  };
+  const toggleExpand=(id)=>sExpanded(p=>p===id?null:id);
+
+  const handleRetrain=async()=>{
+    sRetraining(true);sRetrainResult(null);sRetrainError("");
+    try{
+      const res=await triggerRetrain();
+      sRetrainResult(res);
+      onRetrain&&onRetrain(res);
+    }catch(e){sRetrainError(e.message);}
+    finally{sRetraining(false);}
+  };
+
+  // How many claims have recorded outcomes (from history state)
+  const recordedCount=history.filter(h=>h.feedbackSaved).length;
 
   if(!tot) return(
     <div className="fu" style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:380,gap:18,textAlign:"center",padding:24}}>
@@ -449,8 +559,46 @@ function HistoryPage({history,onClear}){
         ))}
       </div>
 
+      {/* Retrain panel */}
+      <div style={{background:"var(--card)",border:"1.5px solid #e4ddd4",borderRadius:14,padding:"16px 20px",marginBottom:14,display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,flexWrap:"wrap",boxShadow:"0 1px 8px rgba(20,50,30,.04)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:14,minWidth:0}}>
+          <div style={{width:38,height:38,borderRadius:10,background:"linear-gradient(135deg,#1a5c34,#2d7a4a)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          </div>
+          <div>
+            <div style={{fontSize:12,fontWeight:700,color:"#1c2b22",marginBottom:2}}>Model Retraining</div>
+            <div style={{fontSize:11,color:"#7a9982"}}>
+              <span style={{color:"#1a5c34",fontWeight:600}}>{recordedCount}</span> outcome{recordedCount!==1?"s":""} recorded
+              {recordedCount>0&&<span style={{color:"#7a9982"}}> · Model will learn from your feedback</span>}
+            </div>
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          {retrainResult&&(
+            <div style={{display:"flex",alignItems:"center",gap:8,padding:"7px 14px",background:"#eaf6f0",border:"1.5px solid #8ecfb0",borderRadius:10,fontSize:11.5}}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#1a5c34" strokeWidth="2.5"><path d="M20 6L9 17l-5-5"/></svg>
+              <span style={{color:"#1a5c34",fontWeight:600}}>Retrained!</span>
+              <span style={{color:"#3d5247"}}>
+                {retrainResult.previous_accuracy}% → <strong style={{color:"#1a5c34"}}>{retrainResult.new_accuracy}%</strong>
+                {retrainResult.improvement>0&&<span style={{color:"#3d8b5e"}}> (+{retrainResult.improvement}%)</span>}
+              </span>
+            </div>
+          )}
+          {retrainError&&(
+            <div style={{padding:"7px 14px",background:"#fde6e4",border:"1.5px solid #f0a09a",borderRadius:10,fontSize:11.5,color:"#8f1e14"}}>{retrainError}</div>
+          )}
+          <button onClick={handleRetrain} disabled={retraining||recordedCount===0}
+            style={{padding:"9px 20px",background:recordedCount===0?"#e4ddd4":"linear-gradient(135deg,#1a5c34,#2d7a4a)",color:recordedCount===0?"#7a9982":"#fff",border:"none",borderRadius:9,cursor:recordedCount===0||retraining?"not-allowed":"pointer",fontSize:12.5,fontWeight:700,display:"flex",alignItems:"center",gap:8,transition:"all .18s",boxShadow:recordedCount>0?"0 4px 14px rgba(26,92,52,.3)":"none"}}>
+            {retraining
+              ?<><span style={{width:13,height:13,border:"2px solid rgba(255,255,255,.3)",borderTopColor:"#fff",borderRadius:"50%",animation:"spin 0.7s linear infinite",display:"inline-block"}}/> Retraining…</>
+              :<><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Retrain Model</>
+            }
+          </button>
+        </div>
+      </div>
+
       {/* Filter bar */}
-      <div style={{background:"var(--card)",border:"1.5px solid #e4ddd4",borderRadius:14,padding:"16px 18px",marginBottom:14,boxShadow:"0 1px 8px rgba(20,50,30,.04)"}}>
+      <div style={{background:"var(--card)",border:"1.5px solid #e4ddd4",borderRadius:14,padding:"16px 18px",marginBottom:14,boxShadow:"0 1px 8px rgba(20,50,30,.04)"}}> 
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4aa06e" strokeWidth="2.2"><path d="M22 3H2l8 9.46V19l4 2V12.46z"/></svg>
           <span style={{fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:".1em",color:"#3d5247"}}>Filter Claims</span>
@@ -500,7 +648,7 @@ function HistoryPage({history,onClear}){
               <table style={{width:"100%",borderCollapse:"collapse",minWidth:640}}>
                 <thead>
                   <tr style={{background:"linear-gradient(90deg,#1a5c34,#2d7a4a)"}}>
-                    {["Claim ID","Company","Age","Employment","Amount","Type","Date","Risk Score","Level"].map(h=>(
+                    {["Claim ID","Company","Age","Employment","Amount","Type","Date","Risk Score","Level","Outcome",""].map(h=>(
                       <th key={h} style={{padding:"12px 14px",textAlign:"left",fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:".07em",color:"rgba(255,255,255,.65)",whiteSpace:"nowrap"}}>{h}</th>
                     ))}
                   </tr>
@@ -509,27 +657,178 @@ function HistoryPage({history,onClear}){
                   {filtered.map((h,i)=>{
                     const sc=h.riskScore||0;
                     const bc=sc>=70?"#b83025":sc>=40?"#c07030":"#3d8b5e";
+                    const isOpen=expanded===h.id;
+                    const rs=RS[h.riskLevel]||RS["Medium"];
                     return(
-                      <tr key={h.id+i} style={{borderBottom:"1px solid #e4ddd4",background:i%2===0?"var(--card)":"#f7f3ee",transition:"background .15s"}}
-                        onMouseEnter={e=>e.currentTarget.style.background="#ebf7f1"}
-                        onMouseLeave={e=>e.currentTarget.style.background=i%2===0?"var(--card)":"#f7f3ee"}>
-                        <td style={{padding:"11px 14px",fontFamily:"monospace",fontSize:11,color:"#7a9982"}}>{h.id}</td>
-                        <td style={{padding:"11px 14px",fontWeight:600,fontSize:12.5,whiteSpace:"nowrap"}}>{h.company}</td>
-                        <td style={{padding:"11px 14px",fontSize:12.5,color:"#3d5247"}}>{h.age}</td>
-                        <td style={{padding:"11px 14px",fontSize:12,color:"#3d5247",whiteSpace:"nowrap"}}>{h.employment}</td>
-                        <td style={{padding:"11px 14px",fontSize:12,color:"#3d5247"}}>{h.claimAmount?`$${h.claimAmount.toLocaleString()}`:"—"}</td>
-                        <td style={{padding:"11px 14px",fontSize:12,color:"#3d5247",whiteSpace:"nowrap"}}>{h.claimType||"—"}</td>
-                        <td style={{padding:"11px 14px",fontSize:11,color:"#7a9982"}}>{h.date}</td>
-                        <td style={{padding:"11px 14px"}}>
-                          <div style={{display:"flex",alignItems:"center",gap:8}}>
-                            <div style={{width:60,height:5,background:"#e4ddd4",borderRadius:2,overflow:"hidden",flexShrink:0}}>
-                              <div style={{height:"100%",width:`${sc}%`,background:bc,borderRadius:2}}/>
+                      <React.Fragment key={h.id+i}>
+                        {/* ── Main row ── */}
+                        <tr style={{borderBottom:isOpen?"none":"1px solid #e4ddd4",background:isOpen?"#ebf7f1":i%2===0?"var(--card)":"#f7f3ee",transition:"background .15s",cursor:"pointer"}}
+                          onClick={()=>toggleExpand(h.id)}
+                          onMouseEnter={e=>{if(!isOpen)e.currentTarget.style.background="#ebf7f1"}}
+                          onMouseLeave={e=>{if(!isOpen)e.currentTarget.style.background=i%2===0?"var(--card)":"#f7f3ee"}}>
+                          <td style={{padding:"11px 14px",fontFamily:"monospace",fontSize:11,color:"#7a9982"}}>
+                            <div style={{display:"flex",alignItems:"center",gap:6}}>
+                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#7a9982" strokeWidth="2.5" style={{transition:"transform .2s",transform:isOpen?"rotate(90deg)":"rotate(0deg)",flexShrink:0}}><path d="M9 18l6-6-6-6"/></svg>
+                              {h.id}
                             </div>
-                            <span style={{fontSize:11,fontWeight:700,color:bc}}>{sc}%</span>
-                          </div>
-                        </td>
-                        <td style={{padding:"11px 14px"}}><RiskBadge level={h.riskLevel}/></td>
-                      </tr>
+                          </td>
+                          <td style={{padding:"11px 14px",fontWeight:600,fontSize:12.5,whiteSpace:"nowrap"}}>{h.company}</td>
+                          <td style={{padding:"11px 14px",fontSize:12.5,color:"#3d5247"}}>{h.age}</td>
+                          <td style={{padding:"11px 14px",fontSize:12,color:"#3d5247",whiteSpace:"nowrap"}}>{h.employment}</td>
+                          <td style={{padding:"11px 14px",fontSize:12,color:"#3d5247"}}>{h.claimAmount?`$${h.claimAmount.toLocaleString()}`:"—"}</td>
+                          <td style={{padding:"11px 14px",fontSize:12,color:"#3d5247",whiteSpace:"nowrap"}}>{h.claimType||"—"}</td>
+                          <td style={{padding:"11px 14px",fontSize:11,color:"#7a9982"}}>{h.date}</td>
+                          <td style={{padding:"11px 14px"}}>
+                            <div style={{display:"flex",alignItems:"center",gap:8}}>
+                              <div style={{width:60,height:5,background:"#e4ddd4",borderRadius:2,overflow:"hidden",flexShrink:0}}>
+                                <div style={{height:"100%",width:`${sc}%`,background:bc,borderRadius:2}}/>
+                              </div>
+                              <span style={{fontSize:11,fontWeight:700,color:bc}}>{sc}%</span>
+                            </div>
+                          </td>
+                          <td style={{padding:"11px 14px"}}><RiskBadge level={h.riskLevel}/></td>
+                          <td style={{padding:"11px 14px"}} onClick={e=>e.stopPropagation()}>
+                            {(h.feedbackSaved||savedFeedback[h.id])
+                              ?<span style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:11,fontWeight:600,color:"#1a5c34",background:"#eaf6f0",border:"1.5px solid #9ecfae",padding:"3px 10px",borderRadius:20,whiteSpace:"nowrap"}}>
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#1a5c34" strokeWidth="3"><path d="M20 6L9 17l-5-5"/></svg>
+                                {h.recordedOutcome||savedFeedback[h.id]||"Recorded"}
+                              </span>
+                              :<button onClick={()=>sFeedbackModal(h)} style={{padding:"5px 12px",background:"#ddeaf8",color:"#1e3e6a",border:"1.5px solid #9ec0e8",borderRadius:8,cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>Record Outcome</button>
+                            }
+                          </td>
+                          <td style={{padding:"11px 14px"}} onClick={e=>e.stopPropagation()}>
+                            <button onClick={()=>sDeleteConfirm(h.id)} title="Delete claim"
+                              style={{width:28,height:28,border:"1.5px solid #f0a09a",background:"#fde6e4",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:"#b83025",transition:"all .15s",fontSize:15,fontWeight:700,lineHeight:1}}
+                              onMouseEnter={e=>{e.currentTarget.style.background="#b83025";e.currentTarget.style.color="#fff";}}
+                              onMouseLeave={e=>{e.currentTarget.style.background="#fde6e4";e.currentTarget.style.color="#b83025";}}>
+                              ×
+                            </button>
+                          </td>
+                        </tr>
+
+                        {/* ── Expanded detail row ── */}
+                        {isOpen&&(
+                          <tr style={{background:"#f5fbf8",borderBottom:"2px solid #9ecfae"}}>
+                            <td colSpan={11} style={{padding:"0"}}>
+                              <div style={{padding:"20px 24px",display:"flex",flexDirection:"column",gap:18,animation:"slideIn .25s ease"}}>
+
+                                {/* Claim details grid */}
+                                <div>
+                                  <div style={{fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:".12em",color:"#3d8b5e",marginBottom:12,display:"flex",alignItems:"center",gap:8}}>
+                                    <div style={{width:3,height:12,background:"#3d8b5e",borderRadius:2}}/>Claim Details
+                                  </div>
+                                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10}}>
+                                    {[
+                                      {l:"Claim ID",v:h.id},
+                                      {l:"Company",v:h.company},
+                                      {l:"Specialty",v:h.specialty||"—"},
+                                      {l:"Claim Type",v:h.claimType||"—"},
+                                      {l:"Amount",v:h.claimAmount?`$${h.claimAmount.toLocaleString()}`:"—"},
+                                      {l:"Claim Date",v:h.date},
+                                      {l:"Diagnosis",v:h.diagCode||"—"},
+                                      {l:"Procedure",v:h.procCode||"—"},
+                                      {l:"Location",v:h.location||"—"},
+                                      {l:"Submission",v:h.submission||"—"},
+                                      {l:"Gender",v:h.gender||"—"},
+                                      {l:"Marital",v:h.marital||"—"},
+                                      {l:"Employment",v:h.employment||"—"},
+                                      {l:"Income",v:h.income?`$${parseInt(h.income).toLocaleString()}`:"—"},
+                                      {l:"Insurance Status",v:h.insuranceStatus||"—"},
+                                    ].map(({l,v})=>(
+                                      <div key={l} style={{background:"#fff",border:"1.5px solid #e4ddd4",borderRadius:10,padding:"10px 13px"}}>
+                                        <div style={{fontSize:9.5,fontWeight:700,color:"#7a9982",textTransform:"uppercase",letterSpacing:".08em",marginBottom:3}}>{l}</div>
+                                        <div style={{fontSize:12.5,fontWeight:600,color:"#1c2b22"}}>{v}</div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                {/* Risk summary */}
+                                <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+                                  <div style={{background:rs.bg,border:`1.5px solid ${rs.bd}`,borderRadius:12,padding:"14px 20px",display:"flex",alignItems:"center",gap:14,flex:"0 0 auto"}}>
+                                    <div style={{width:48,height:48,borderRadius:"50%",background:`conic-gradient(${rs.bar} ${sc*3.6}deg,#e4ddd4 0deg)`,display:"flex",alignItems:"center",justifyContent:"center"}}>
+                                      <div style={{width:36,height:36,borderRadius:"50%",background:rs.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:800,color:rs.bar}}>{sc}%</div>
+                                    </div>
+                                    <div>
+                                      <div style={{fontSize:10,fontWeight:700,color:rs.bar,textTransform:"uppercase",letterSpacing:".09em",opacity:.7}}>Risk Score</div>
+                                      <div style={{fontFamily:"'Playfair Display',serif",fontSize:22,color:rs.bar,lineHeight:1}}>{sc}%</div>
+                                      <RiskBadge level={h.riskLevel}/>
+                                    </div>
+                                  </div>
+                                  {h.projectedRisk!=null&&(()=>{
+                                    const red=Math.max(0,sc-Math.round(h.projectedRisk));
+                                    return red>0?(
+                                      <div style={{background:"linear-gradient(135deg,#1a5c34,#2d7a4a)",borderRadius:12,padding:"14px 20px",display:"flex",alignItems:"center",gap:14,flex:"0 0 auto"}}>
+                                        <div style={{fontSize:10,color:"rgba(255,255,255,.5)",textTransform:"uppercase",letterSpacing:".09em",fontWeight:700}}>If fixed</div>
+                                        <div style={{fontFamily:"'Playfair Display',serif",fontSize:22,color:"#5dffa0",lineHeight:1}}>{Math.round(h.projectedRisk)}%</div>
+                                        <div style={{fontSize:11,color:"rgba(255,255,255,.6)"}}>saves <strong style={{color:"#ffaa7a"}}>{red}%</strong> risk</div>
+                                      </div>
+                                    ):null;
+                                  })()}
+                                </div>
+
+                                {/* Top risk features */}
+                                {h.topFeatures?.length>0&&(
+                                  <div>
+                                    <div style={{fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:".12em",color:"#4a82b8",marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
+                                      <div style={{width:3,height:12,background:"#4a82b8",borderRadius:2}}/>Top Risk Factors
+                                    </div>
+                                    <div style={{display:"flex",flexDirection:"column",gap:7}}>
+                                      {h.topFeatures.map((f,fi)=>{
+                                        const fc=fi===0?"#b83025":fi===1?"#c07030":"#3d8b5e";
+                                        return(
+                                          <div key={f} style={{display:"flex",alignItems:"center",gap:10}}>
+                                            <span style={{width:20,height:20,borderRadius:6,background:fc,color:"#fff",fontSize:9,fontWeight:700,display:"inline-flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{fi+1}</span>
+                                            <div style={{minWidth:160,fontSize:12,color:"#3d5247",fontWeight:600}}>{f}</div>
+                                            <div style={{flex:1,height:5,background:"#ddd6ca",borderRadius:2,overflow:"hidden"}}>
+                                              <div style={{height:"100%",width:Math.max(15,100-fi*20)+"%",background:fc,borderRadius:2}}/>
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Prevention suggestions */}
+                                {h.suggestions?.length>0&&(
+                                  <div>
+                                    <div style={{fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:".12em",color:"#c07030",marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
+                                      <div style={{width:3,height:12,background:"#c07030",borderRadius:2}}/>Prevention Recommendations
+                                    </div>
+                                    <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                                      {h.suggestions.map((s,si)=>{
+                                        const pc=s.severity==="High"?"#b83025":s.severity==="Medium"?"#c07030":"#3d8b5e";
+                                        const sev=SEV[s.severity]||SEV["Medium"];
+                                        return(
+                                          <div key={si} style={{background:"#fff",border:`1.5px solid ${sev.bd}`,borderRadius:10,padding:"12px 14px",borderLeft:`4px solid ${pc}`}}>
+                                            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                                              <span style={{width:20,height:20,borderRadius:5,background:pc,color:"#fff",fontSize:10,fontWeight:700,display:"inline-flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{si+1}</span>
+                                              <span style={{fontSize:12.5,fontWeight:700,color:"#1c2b22",flex:1}}>{s.feature||"Risk Factor"}</span>
+                                              <span style={{fontSize:10,fontWeight:700,background:sev.bg,color:sev.c,border:`1px solid ${sev.bd}`,padding:"2px 8px",borderRadius:8}}>{s.severity}</span>
+                                            </div>
+                                            {s.message&&<div style={{fontSize:12,color:"#3d5247",lineHeight:1.55,paddingLeft:28,marginBottom:4}}>{s.message}</div>}
+                                            {s.action&&<div style={{display:"flex",alignItems:"flex-start",gap:6,paddingLeft:28}}>
+                                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4aa06e" strokeWidth="2.5" style={{flexShrink:0,marginTop:2}}><path d="M5 12l5 5L20 7"/></svg>
+                                              <span style={{fontSize:11.5,color:"#1a5c34",fontWeight:500}}>{s.action}</span>
+                                            </div>}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {h.suggestions?.length===0&&(
+                                  <div style={{padding:"14px 18px",background:"#eaf6f0",border:"1.5px solid #8ecfb0",borderRadius:10,fontSize:13,color:"#1a5c34",fontWeight:500}}>
+                                    ✓ No specific prevention actions flagged for this claim.
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
@@ -538,6 +837,36 @@ function HistoryPage({history,onClear}){
           )
         }
       </div>
+    {/* Delete confirmation */}
+    {deleteConfirm&&(
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(4px)"}}>
+        <div style={{background:"var(--card)",borderRadius:18,padding:"28px 32px",maxWidth:380,width:"90%",boxShadow:"0 24px 64px rgba(0,0,0,.22)",border:"1.5px solid #f0a09a"}}>
+          <div style={{width:44,height:44,borderRadius:12,background:"#fde6e4",display:"flex",alignItems:"center",justifyContent:"center",marginBottom:14}}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#b83025" strokeWidth="2.2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+          </div>
+          <div style={{fontFamily:"'Playfair Display',serif",fontSize:19,color:"#1c2b22",marginBottom:8}}>Delete this claim?</div>
+          <div style={{fontSize:13,color:"#7a9982",lineHeight:1.65,marginBottom:22}}>
+            Claim <span style={{fontFamily:"monospace",color:"#3d5247",fontWeight:600}}>{deleteConfirm}</span> will be permanently removed from your history. This cannot be undone.
+          </div>
+          <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+            <button onClick={()=>sDeleteConfirm(null)} style={{padding:"8px 20px",border:"1.5px solid #ddd6ca",borderRadius:9,background:"transparent",cursor:"pointer",fontSize:13,color:"#3d5247",fontWeight:500}}>Cancel</button>
+            <button onClick={()=>{onDelete(deleteConfirm);sDeleteConfirm(null);if(expanded===deleteConfirm)sExpanded(null);}}
+              style={{padding:"8px 22px",border:"none",borderRadius:9,background:"#b83025",cursor:"pointer",fontSize:13,color:"#fff",fontWeight:600,display:"flex",alignItems:"center",gap:7}}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+              Delete
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    {feedbackModal&&(
+      <RecordOutcomeModal
+        claim={feedbackModal}
+        onClose={()=>sFeedbackModal(null)}
+        onSaved={(res)=>{handleOutcomeSaved(res,feedbackModal.id);}}
+        onMarkOutcome={onMarkOutcome}
+      />
+    )}
     </div>
   );
 }
@@ -552,7 +881,7 @@ const DS_HM_TYPE={"Aetna":{Dental:null,Emergency:null,Inpatient:null,"Mental Hea
 const CO_COLORS=["#235c38","#4a82b8","#c07030","#8b4faa","#b83025","#267a7a","#b8941a","#7a4820","#3a8e54","#7a3a7a"];
 
 // ────────────────────────────── ANALYTICS PAGE
-function AnalyticsPage({history}){
+function AnalyticsPage({history,liveStats}){
   const[hmView,sHmView]=useState("month");
   const[tooltip,sTt]=useState(null);
   const[ttPos,sTtPos]=useState({x:0,y:0});
@@ -570,7 +899,39 @@ function AnalyticsPage({history}){
     </div>
   );
 
-  const sortedCos=[...DS_COMPANIES].sort((a,b)=>DS_CO_STATS[b].rate-DS_CO_STATS[a].rate);
+  // ── Merge baseline dataset with recorded feedback from history ──────────────
+  const liveCoStats=useMemo(()=>{
+    const REJECTED=new Set(["Rejected"]);
+    // Start from deep copy of baseline
+    const stats={};
+    DS_COMPANIES.forEach(co=>{
+      stats[co]={...DS_CO_STATS[co]};
+    });
+    // Fold in every history entry that has a recorded outcome
+    history.forEach(h=>{
+      if(!h.feedbackSaved||!h.recordedOutcome)return;
+      const co=h.company;
+      if(!stats[co])stats[co]={total:0,rej:0,rate:0};
+      stats[co].total+=1;
+      if(REJECTED.has(h.recordedOutcome))stats[co].rej+=1;
+      // Recompute rate
+      stats[co].rate=Math.round((stats[co].rej/stats[co].total)*100);
+    });
+    return stats;
+  },[history]);
+
+  // Total dataset size
+  const feedbackAdded=history.filter(h=>h.feedbackSaved&&h.recordedOutcome).length;
+  const totalRecords=5000+feedbackAdded;
+
+  // Global rejection rate across all companies
+  const globalRej=DS_COMPANIES.reduce((s,co)=>s+liveCoStats[co].rej,0);
+  const globalTot=DS_COMPANIES.reduce((s,co)=>s+liveCoStats[co].total,0);
+  const avgRate=globalTot?Math.round((globalRej/globalTot)*100):21;
+
+  const sortedCos=[...DS_COMPANIES].sort((a,b)=>liveCoStats[b].rate-liveCoStats[a].rate);
+  const highestCo=sortedCos[0];
+  const lowestCo=sortedCos[sortedCos.length-1];
 
   return(
     <div className="fu" style={{width:"100%",maxWidth:1160,margin:"0 auto",display:"flex",flexDirection:"column",gap:16}}>
@@ -578,16 +939,34 @@ function AnalyticsPage({history}){
       {/* Dataset badge */}
       <div style={{display:"flex",alignItems:"center",gap:9,padding:"10px 18px",background:"linear-gradient(90deg,#1a5c34,#2d7a4a)",borderRadius:12,color:"rgba(255,255,255,.65)",fontSize:11,boxShadow:"0 2px 12px rgba(14,44,26,.25)"}}>
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-        <span>Dataset: <strong style={{color:"#5dffa0"}}>5,000 historical claims</strong> · 10 insurers · dataset_featured.csv</span>
+        <span>Dataset: <strong style={{color:"#5dffa0"}}>{totalRecords.toLocaleString()} historical claims</strong> · 10 insurers · dataset_featured.csv{feedbackAdded>0&&<span style={{color:"rgba(255,255,255,.5)"}}> + <strong style={{color:"#ffdf80"}}>{feedbackAdded} recorded outcome{feedbackAdded!==1?"s":""}</strong></span>}</span>
       </div>
+
+      {/* Live model stats — shown when retraining has happened */}
+      {(liveStats?.feedbackCount>0||liveStats?.retrainCount>0)&&(
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+          {[
+            {l:"Feedback Recorded",v:liveStats.feedbackCount||0,s:"real outcomes",c:"#1e3e6a",bg:"#ddeaf8",bd:"#9ec0e8"},
+            {l:"Model Retrains",v:liveStats.retrainCount||0,s:"since baseline",c:"#541d72",bg:"#f3e6f8",bd:"#c898e0"},
+            {l:"Model Version",v:liveStats.modelVersion||"v1_base",s:"current",c:"#1a5c34",bg:"#eaf6f0",bd:"#9ecfae"},
+            {l:"Last Retrain",v:liveStats.lastRetrain?liveStats.lastRetrain.split(",")[0]:"Never",s:liveStats.lastRetrain?"retrained":"no retrains yet",c:"#7a3c0a",bg:"#fef0e0",bd:"#f0bc7a"},
+          ].map(k=>(
+            <div key={k.l} style={{background:k.bg,border:`1.5px solid ${k.bd}`,borderRadius:14,padding:"14px 16px",boxShadow:"0 2px 10px rgba(20,50,30,.05)"}}>
+              <div style={{fontSize:9,fontWeight:800,textTransform:"uppercase",letterSpacing:".09em",color:k.c,opacity:.55,marginBottom:4}}>{k.l}</div>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:22,color:k.c,lineHeight:1.1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{k.v}</div>
+              <div style={{fontSize:10,color:k.c,opacity:.45,marginTop:3}}>{k.s}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* KPIs */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10}}>
         {[
-          {l:"Records",v:"5,000",s:"historical claims",c:"#1a5c34",bg:"var(--card)",bd:"#e4ddd4"},
-          {l:"Avg Rejection",v:"21%",s:"across all insurers",c:"#7a3c0a",bg:"#fef0e0",bd:"#f0bc7a"},
-          {l:"Highest",v:"24%",s:"UnitedHealth Group",c:"#8f1e14",bg:"#fde6e4",bd:"#f0a09a"},
-          {l:"Lowest",v:"17%",s:"Oscar Health",c:"#1a5c34",bg:"#eaf6f0",bd:"#9ecfae"},
+          {l:"Records",v:totalRecords.toLocaleString(),s:"total claims",c:"#1a5c34",bg:"var(--card)",bd:"#e4ddd4"},
+          {l:"Avg Rejection",v:`${avgRate}%`,s:"across all insurers",c:"#7a3c0a",bg:"#fef0e0",bd:"#f0bc7a"},
+          {l:"Highest",v:`${liveCoStats[highestCo].rate}%`,s:highestCo,c:"#8f1e14",bg:"#fde6e4",bd:"#f0a09a"},
+          {l:"Lowest",v:`${liveCoStats[lowestCo].rate}%`,s:lowestCo,c:"#1a5c34",bg:"#eaf6f0",bd:"#9ecfae"},
           {l:"Insurers",v:"10",s:"tracked companies",c:"#1e3e6a",bg:"#ddeaf8",bd:"#9ec0e8"},
         ].map(k=>(
           <div key={k.l} style={{background:k.bg,border:`1.5px solid ${k.bd}`,borderRadius:14,padding:"14px 16px",boxShadow:"0 2px 10px rgba(20,50,30,.05)"}}>
@@ -604,20 +983,27 @@ function AnalyticsPage({history}){
           <Title color="#4a82b8">Rejection Rate by Insurer</Title>
           <div style={{display:"flex",flexDirection:"column",gap:5}}>
             {sortedCos.map((co,i)=>{
-              const s=DS_CO_STATS[co];
+              const s=liveCoStats[co];
+              const base=DS_CO_STATS[co];
+              const delta=s.total-base.total; // new entries added via feedback
               const on=activeCo===co;
               const bc=s.rate>=23?"#b83025":s.rate>=20?"#c07030":"#3d8b5e";
               return(
                 <div key={co} onClick={()=>sActiveCo(on?null:co)} style={{cursor:"pointer",borderRadius:10,padding:"7px 10px",background:on?"#ebf5ef":"transparent",border:on?"1.5px solid #9ecfae":"1.5px solid transparent",transition:"all .18s"}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
                     <span style={{fontSize:11,fontWeight:600,color:"#1c2b22",flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{co}</span>
+                    {delta>0&&<span style={{fontSize:9,fontWeight:700,color:"#1e3e6a",background:"#ddeaf8",border:"1px solid #9ec0e8",padding:"1px 6px",borderRadius:8,flexShrink:0}}>+{delta} new</span>}
                     <span style={{fontSize:10,color:"#7a9982",flexShrink:0}}>{s.rej}/{s.total}</span>
                     <span style={{fontSize:12,fontWeight:700,color:bc,minWidth:34,textAlign:"right",flexShrink:0}}>{s.rate}%</span>
                   </div>
                   <div style={{height:6,background:"#e4ddd4",borderRadius:3,overflow:"hidden"}}>
                     <div style={{height:"100%",width:`${s.rate/32*100}%`,background:`linear-gradient(90deg,${bc}70,${bc})`,borderRadius:3,transition:"width .9s ease"}}/>
                   </div>
-                  {on&&<div style={{marginTop:7,display:"flex",gap:12,paddingLeft:2}}><span style={{fontSize:10.5,color:"#b83025"}}>⬆ {s.rej} rejected</span><span style={{fontSize:10.5,color:"#3d8b5e"}}>✓ {s.total-s.rej} approved</span></div>}
+                  {on&&<div style={{marginTop:7,display:"flex",gap:12,paddingLeft:2}}>
+                    <span style={{fontSize:10.5,color:"#b83025"}}>⬆ {s.rej} rejected</span>
+                    <span style={{fontSize:10.5,color:"#3d8b5e"}}>✓ {s.total-s.rej} approved</span>
+                    {delta>0&&<span style={{fontSize:10.5,color:"#1e3e6a"}}>· {delta} from your data</span>}
+                  </div>}
                 </div>
               );
             })}
@@ -1254,7 +1640,30 @@ export default function App(){
   const[collapsed,sCollapsed]=useState(false);
   const[mobileOpen,sMob]=useState(false);
   const[history,sHistory]=useState(()=>{try{const s=localStorage.getItem("rcm_claim_history");return s?JSON.parse(s):[];}catch{return[];}});
+  const[liveStats,sLiveStats]=useState(()=>{try{const s=localStorage.getItem("rcm_live_stats");return s?JSON.parse(s):{feedbackCount:0,retrainCount:0,lastRetrain:null,modelVersion:"v1_base"};}catch{return{feedbackCount:0,retrainCount:0,lastRetrain:null,modelVersion:"v1_base"};}});
+
   const addH=e=>sHistory(p=>{const n=[e,...p];try{localStorage.setItem("rcm_claim_history",JSON.stringify(n));}catch{}return n;});
+  const deleteH=id=>sHistory(p=>{const n=p.filter(h=>h.id!==id);try{localStorage.setItem("rcm_claim_history",JSON.stringify(n));}catch{}return n;});
+  // Mark a claim as having recorded outcome + update live stats
+  const markOutcomeH=(id,outcome,feedbackResp)=>sHistory(p=>{
+    const n=p.map(h=>h.id===id?{...h,recordedOutcome:outcome,feedbackSaved:true}:h);
+    try{localStorage.setItem("rcm_claim_history",JSON.stringify(n));}catch{}
+    // Update live stats
+    const ns={...liveStats,feedbackCount:(liveStats.feedbackCount||0)+1};
+    if(feedbackResp?.retraining_triggered){
+      ns.retrainCount=(liveStats.retrainCount||0)+1;
+      ns.lastRetrain=new Date().toLocaleString();
+      ns.modelVersion=feedbackResp.model_version||("v"+(ns.retrainCount+1)+"_retrained");
+    }
+    sLiveStats(ns);
+    try{localStorage.setItem("rcm_live_stats",JSON.stringify(ns));}catch{}
+    return n;
+  });
+  const updateStatsAfterRetrain=(result)=>{
+    const ns={...liveStats,retrainCount:(liveStats.retrainCount||0)+1,lastRetrain:new Date().toLocaleString(),modelVersion:result.model_version||"retrained"};
+    sLiveStats(ns);
+    try{localStorage.setItem("rcm_live_stats",JSON.stringify(ns));}catch{}
+  };
 
   const nav=[
     {id:"entry",label:"New Entry",icon:<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>},
@@ -1365,8 +1774,8 @@ export default function App(){
           {/* Page body */}
           <div className="page-pad" style={{flex:1,overflowY:"auto",overflowX:"hidden",padding:"clamp(14px,3vw,24px) clamp(14px,3vw,28px)"}}>
             {page==="entry"&&<EntryPage onSubmit={addH}/>}
-            {page==="analytics"&&<AnalyticsPage history={history}/>}
-            {page==="history"&&<HistoryPage history={history} onClear={()=>{sHistory([]);try{localStorage.removeItem("rcm_claim_history");}catch{}}}/>}
+            {page==="analytics"&&<AnalyticsPage history={history} liveStats={liveStats}/>}
+            {page==="history"&&<HistoryPage history={history} onDelete={deleteH} onMarkOutcome={markOutcomeH} onRetrain={updateStatsAfterRetrain} onClear={()=>{sHistory([]);try{localStorage.removeItem("rcm_claim_history");localStorage.removeItem("rcm_live_stats");}catch{}}}/>}
             {page==="batch"&&<BatchPage onBatchSubmit={addH}/>}
           </div>
         </main>
