@@ -198,28 +198,44 @@ Example Output:
 
 ------------------------------------------------------------------------
 
-## Project Structure
+## General Project Structure
 
-    RCM-Denial-Prediction-Engine
-    │
-    ├── data
-    │   └── sample_claim_data.csv
-    │
-    ├── models
-    │   └── denial_prediction_model.pkl
-    │
-    ├── notebooks
-    │   └── model_training.ipynb
+    RCM-Denial-Prediction
     │
     ├── backend
-    │   └── api.py
+    │   ├── main.py
+    │   ├── model.py
+    │   ├── schemas.py
+    │   └── etc..
     │
-    ├── dashboard
-    │   └── dashboard_app.py
+    ├── frontend
+    │   ├── public
+    │   ├── src
+    │   │   ├── assets
+    │   │   ├── api.js
+    │   │   ├── App.jsx
+    │   │   ├── App.css
+    │   │   ├── index.css
+    │   │   └── main.jsx
+    │   └── package.json
     │
-    ├── utils
-    │   └── preprocessing.py
+    ├── ml
+    │   ├── data
+    │   │   ├── dataset_cleaned.csv
+    │   │   ├── dataset_featured.csv
+    │   │   └── healthcare_insurance_claims_dataset.csv
+    │   │
+    │   ├── models
+    │   │   ├── denial_model.pkl
+    │   │   ├── feature_names.pkl
+    │   │   ├── label_encoders.pkl
+    │   │   └── previous_models
+    │   │
+    │   └── notebooks
+    │       └── model_training.ipynb
     │
+    ├── .venv
+    ├── .gitignore
     └── README.md
 
 ------------------------------------------------------------------------
