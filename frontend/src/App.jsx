@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { submitFeedback, triggerRetrain } from "./api";
 import { predictClaim } from "./api";
 
@@ -920,6 +920,36 @@ function AnalyticsPage({history,liveStats}){
     return stats;
   },[history]);
 
+  // ── Per-company per-month counts adjusted with feedback entries ──────────
+  const liveHmMonth=useMemo(()=>{
+    // Deep clone baseline
+    const data={};
+    DS_COMPANIES.forEach(co=>{data[co]=[...DS_HM_MONTH[co]];});
+    // For each feedback entry, bump the month bucket
+    history.forEach(h=>{
+      if(!h.feedbackSaved||!h.recordedOutcome)return;
+      const co=h.company;
+      if(!data[co])return;
+      // parse month from h.date (YYYY-MM-DD)
+      const mo=h.date?parseInt(h.date.split("-")[1],10)-1:null;
+      if(mo===null||mo<0||mo>11)return;
+      const isRej=h.recordedOutcome==="Rejected";
+      // total entries for that company = DS baseline total + feedback for that co
+      const coTotal=liveCoStats[co]?.total||DS_CO_STATS[co]?.total||500;
+      const coRej=liveCoStats[co]?.rej||DS_CO_STATS[co]?.rej||0;
+      // Approximate: weight in new outcome into the month bucket
+      // simple approach: recalculate month % from base + delta
+      // We store raw adjusted % capped to 1 decimal
+      const baseMonthPct=DS_HM_MONTH[co][mo];
+      const baseTotal=DS_CO_STATS[co]?.total||500;
+      const baseMonthCount=Math.round(baseMonthPct/100*baseTotal/12);
+      const newMonthRej=baseMonthCount+(isRej?1:0);
+      const newMonthTotal=baseMonthCount+1;
+      data[co][mo]=Math.round(newMonthRej/newMonthTotal*100);
+    });
+    return data;
+  },[history,liveCoStats]);
+
   // Total dataset size
   const feedbackAdded=history.filter(h=>h.feedbackSaved&&h.recordedOutcome).length;
   const totalRecords=5000+feedbackAdded;
@@ -1078,7 +1108,7 @@ function AnalyticsPage({history,liveStats}){
             </thead>
             <tbody>
               {DS_COMPANIES.map(co=>{
-                const vals=hmView==="month"?DS_HM_MONTH[co]:DS_CLAIM_TYPES.map(ct=>DS_HM_TYPE[co][ct]);
+                const vals=hmView==="month"?(liveHmMonth[co]||DS_HM_MONTH[co]):DS_CLAIM_TYPES.map(ct=>DS_HM_TYPE[co][ct]);
                 const valid=vals.filter(v=>v!==null);
                 const avg=valid.length?Math.round(valid.reduce((s,v)=>s+v,0)/valid.length):null;
                 return(
@@ -1137,7 +1167,7 @@ function AnalyticsPage({history,liveStats}){
                 ))}
                 {DS_MONTHS.map((m,i)=><text key={m} x={xS(i)} y={H-4} textAnchor="middle" fontSize="8" fill="#b0a898">{m}</text>)}
                 {DS_COMPANIES.map((co,ci)=>{
-                  const pts=DS_HM_MONTH[co].map((v,i)=>({x:xS(i),y:yS(v)}));
+                  const pts=(liveHmMonth[co]||DS_HM_MONTH[co]).map((v,i)=>({x:xS(i),y:yS(v)}));
                   const d=pts.map((p,i)=>`${i===0?"M":"L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
                   const on=activeCo===co;
                   const c=CO_COLORS[ci];
