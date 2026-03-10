@@ -55,3 +55,7 @@ Humana,8500.0,2026-03-10,F32.9,90837,29,Non-Binary,Psychiatry,Mental Health,Elec
 Centene Corporation,180.0,2026-03-10,Z12.31,92004,22,Female,Ophthalmology,Vision,Electronic,Approved,18000,Single,Student,OH,Rejected,0,89.0,Critical,2026-03-10
 Humana,8500.0,2026-03-10,F32.9,90837,29,Non-Binary,Psychiatry,Mental Health,Electronic,Partial,35000,Single,Part-Time,CA,Paid,1,31.0,Low,2026-03-10
 UnitedHealth Group,45000.0,2026-03-10,I25.10,70553,62,Male,Cardiology,Inpatient,Electronic,Pending,55000,Married,Retired,TX,Rejected,0,55.0,High,2026-03-10
+Blue Cross Blue Shield,52000.0,2026-03-10,C50.919,85025,58,Female,Oncology,Specialist,Electronic,Pending,61000,Married,Self-Employed,NJ,Rejected,0,58.0,High,2026-03-10
+Humana,8500.0,2026-03-10,F32.9,90837,29,Non-Binary,Psychiatry,Mental Health,Electronic,Partial,35000,Single,Part-Time,CA,Paid,1,40.0,Medium,2026-03-10
+Highmark Health,2200.0,2026-03-10,K21.0,43239,47,Male,Gastroenterology,Dental,Electronic,Partial,53000,Divorced,Full-Time,PA,Rejected,0,46.0,Medium,2026-03-10
+UnitedHealth Group,45000.0,2026-03-10,I25.10,70553,62,Male,Cardiology,Inpatient,Electronic,Pending,55000,Married,Retired,TX,Rejected,0,67.0,High,2026-03-10
