@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { predictClaim } from "./api";
 
 const G = `
@@ -786,6 +786,468 @@ function AnalyticsPage({history}){
   );
 }
 
+// ────────────────────────────── BATCH PAGE
+const SAMPLE_JSON = `{
+  "claims": [
+    {
+      "description": "High risk — Inpatient Cardiology, paper submission, pending insurance",
+      "CompanyName": "UnitedHealth Group",
+      "ClaimAmount": 45000.0,
+      "ClaimDate": "2023-06-15",
+      "DiagnosisCode": "I25.10",
+      "ProcedureCode": "70553",
+      "PatientAge": 62,
+      "PatientGender": "Male",
+      "ProviderSpecialty": "Cardiology",
+      "ClaimType": "Inpatient",
+      "ClaimSubmissionMethod": "Paper",
+      "InsuranceStatus": "Pending",
+      "PatientIncome": 55000,
+      "PatientMaritalStatus": "Married",
+      "PatientEmploymentStatus": "Retired",
+      "ProviderLocation": "TX"
+    },
+    {
+      "description": "Low risk — Preventive, electronic, approved insurance, young patient",
+      "CompanyName": "Kaiser Permanente",
+      "ClaimAmount": 350.0,
+      "ClaimDate": "2023-03-18",
+      "DiagnosisCode": "Z00.00",
+      "ProcedureCode": "99396",
+      "PatientAge": 28,
+      "PatientGender": "Female",
+      "ProviderSpecialty": "Primary Care",
+      "ClaimType": "Preventive",
+      "ClaimSubmissionMethod": "Electronic",
+      "InsuranceStatus": "Approved",
+      "PatientIncome": 72000,
+      "PatientMaritalStatus": "Single",
+      "PatientEmploymentStatus": "Full-Time",
+      "ProviderLocation": "WA"
+    }
+  ]
+}`;
+
+function BatchPage({onBatchSubmit}){
+  const[mode,sMode]=useState("paste");
+  const[raw,sRaw]=useState("");
+  const[parseErr,sParseErr]=useState("");
+  const[claims,sClaims]=useState([]);
+  const[results,sResults]=useState([]);
+  const[running,sRunning]=useState(false);
+  const[expanded,sExpanded]=useState(null);
+  const[progress,sProgress]=useState(0);
+
+  // Normalize any field name format → internal camelCase keys
+  // Supports: your hospital format (CompanyName, PatientAge, etc.)
+  // AND the flat format (company, age, etc.) — both work seamlessly
+  const normalize=(c)=>({
+    company:       c.company      || c.CompanyName               || "",
+    age:           String(c.age   || c.PatientAge                || ""),
+    gender:        c.gender       || c.PatientGender             || "",
+    marital:       c.marital      || c.PatientMaritalStatus       || "",
+    employment:    c.employment   || c.PatientEmploymentStatus    || "",
+    income:        String(c.income|| c.PatientIncome             || ""),
+    claimAmount:   String(c.claimAmount || c.ClaimAmount         || ""),
+    claimDate:     c.claimDate    || c.ClaimDate                 || "",
+    claimType:     c.claimType    || c.ClaimType                 || "",
+    diagCode:      c.diagCode     || c.DiagnosisCode             || "",
+    procCode:      c.procCode     || c.ProcedureCode             || "",
+    specialty:     c.specialty    || c.ProviderSpecialty          || "",
+    location:      c.location     || c.ProviderLocation          || "",
+    submission:    c.submission   || c.ClaimSubmissionMethod      || "",
+    // Extra hospital fields — passed through for display
+    description:   c.description  || "",
+    insuranceStatus: c.InsuranceStatus || c.insuranceStatus      || "",
+  });
+
+  const extractArray=(parsed)=>{
+    // Handle: plain array, { claims: [...] }, or single object
+    if(Array.isArray(parsed)) return parsed;
+    if(parsed && Array.isArray(parsed.claims)) return parsed.claims;
+    if(parsed && typeof parsed==="object") return [parsed];
+    return [];
+  };
+
+  const parseClaims=(text)=>{
+    sParseErr(""); sClaims([]); sResults([]);
+    try{
+      const parsed=JSON.parse(text.trim());
+      const arr=extractArray(parsed);
+      if(!arr.length){sParseErr("No claims found in the JSON.");return;}
+      if(arr.length>200){sParseErr("Max 200 claims per batch.");return;}
+      sClaims(arr.map(normalize));
+    }catch(e){sParseErr("Invalid JSON: "+e.message);}
+  };
+
+  const handleFile=async(e)=>{
+    const file=e.target.files?.[0]; if(!file)return;
+    const text=await file.text();
+    if(file.name.endsWith(".csv")){
+      const lines=text.trim().split("\n");
+      const headers=lines[0].split(",").map(h=>h.trim().replace(/"/g,""));
+      const arr=lines.slice(1).map(line=>{
+        const vals=line.split(",").map(v=>v.trim().replace(/"/g,""));
+        const obj={}; headers.forEach((h,i)=>{obj[h]=vals[i]||"";}); return obj;
+      }).filter(o=>Object.values(o).some(v=>v));
+      const j=JSON.stringify(arr,null,2); sRaw(j); parseClaims(j);
+    } else { sRaw(text); parseClaims(text); }
+    e.target.value="";
+  };
+
+  const runBatch=async()=>{
+    if(!claims.length)return;
+    sRunning(true); sExpanded(null); sProgress(0);
+    const res=claims.map(c=>({claim:c,entry:null,status:"pending",error:null}));
+    sResults([...res]);
+    for(let i=0;i<claims.length;i++){
+      res[i].status="running"; sResults([...res]);
+      const c=claims[i]; // already normalized
+      try{
+        const data=await predictClaim(c);
+        const entry={
+          id:"CLM"+String(Math.floor(Math.random()*90000)+10000),
+          company:c.company,age:parseInt(c.age)||0,
+          employment:c.employment,income:parseInt(c.income)||0,
+          claimAmount:parseFloat(c.claimAmount)||0,
+          claimType:c.claimType,date:new Date().toISOString().split("T")[0],
+          gender:c.gender,marital:c.marital,
+          specialty:c.specialty,diagCode:c.diagCode,
+          procCode:c.procCode,location:c.location,
+          description:c.description||"",insuranceStatus:c.insuranceStatus||"",
+          riskScore:Math.round(data.risk_score??0),riskLevel:data.risk_level??"Unknown",
+          suggestions:data.prevention_suggestions??[],
+          projectedRisk:data.projected_risk_if_fixed??null,
+          topFeatures:data.top_risk_features??[],
+        };
+        res[i]={...res[i],entry,status:"done"};
+        onBatchSubmit(entry);
+      }catch(err){res[i]={...res[i],status:"error",error:err.message};}
+      sProgress(Math.round((i+1)/claims.length*100));
+      sResults([...res]);
+    }
+    sRunning(false);
+  };
+
+  const done=results.filter(r=>r.status==="done");
+  const avgRisk=done.length?Math.round(done.reduce((s,r)=>s+(r.entry?.riskScore||0),0)/done.length):0;
+  const highRisk=done.filter(r=>(r.entry?.riskScore||0)>=60).length;
+
+  return(
+    <div className="fu" style={{width:"100%",maxWidth:1020,margin:"0 auto"}}>
+
+      {/* Hero */}
+      <div style={{background:"linear-gradient(135deg,#1a5c34 0%,#236e42 50%,#2e8a54 100%)",borderRadius:18,padding:"22px 28px",marginBottom:20,position:"relative",overflow:"hidden",boxShadow:"0 8px 32px rgba(26,92,52,.28)"}}>
+        <div style={{position:"absolute",top:-50,right:-30,width:220,height:220,borderRadius:"50%",background:"rgba(255,255,255,.03)"}}/>
+        <div style={{position:"relative",zIndex:1}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+            <div style={{width:7,height:7,borderRadius:"50%",background:"#5dffa0",boxShadow:"0 0 10px #5dffa0",animation:"pulse 2s ease infinite"}}/>
+            <span style={{color:"rgba(255,255,255,.5)",fontSize:10,textTransform:"uppercase",letterSpacing:".13em",fontWeight:700}}>Batch Processing</span>
+          </div>
+          <h2 style={{fontFamily:"'Playfair Display',serif",fontSize:"clamp(18px,4vw,26px)",color:"#fff",fontWeight:600,marginBottom:6,lineHeight:1.2}}>Multi-Claim Batch Predictor</h2>
+          <p style={{color:"rgba(255,255,255,.45)",fontSize:13,lineHeight:1.6}}>Paste a JSON array or upload a JSON / CSV file · Up to 200 claims at once · Click any result row to expand</p>
+        </div>
+      </div>
+
+      {/* Input card */}
+      <div className="card" style={{marginBottom:16}}>
+        <div style={{display:"flex",gap:0,background:"#f0ebe2",borderRadius:10,padding:3,marginBottom:18,width:"fit-content"}}>
+          {[{id:"paste",label:"Paste JSON"},{id:"upload",label:"Upload File"}].map(t=>(
+            <button key={t.id} onClick={()=>sMode(t.id)}
+              style={{padding:"7px 18px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12.5,fontWeight:mode===t.id?700:400,background:mode===t.id?"#1a5c34":"transparent",color:mode===t.id?"#fff":"#7a9982",transition:"all .18s"}}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {mode==="paste"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:2}}>
+              <label style={{fontSize:10,fontWeight:700,color:"#3d5247",textTransform:"uppercase",letterSpacing:".09em"}}>JSON Array of Claims</label>
+              <button onClick={()=>{sRaw(SAMPLE_JSON);parseClaims(SAMPLE_JSON);}} style={{fontSize:11,color:"#4a82b8",background:"none",border:"none",cursor:"pointer",fontWeight:600,textDecoration:"underline",padding:0}}>Load sample</button>
+            </div>
+            <textarea value={raw} onChange={e=>{sRaw(e.target.value);sParseErr("");sClaims([]);sResults([]);}}
+              placeholder={'[\n  {\n    "company": "Aetna",\n    "age": "45",\n    "gender": "Female",\n    ...\n  }\n]'}
+              style={{width:"100%",height:200,padding:"12px 14px",border:"1.5px solid #ddd6ca",borderRadius:10,background:"#faf7f3",color:"#1c2b22",fontSize:12.5,fontFamily:"monospace",outline:"none",resize:"vertical",lineHeight:1.6}}
+            />
+            <button onClick={()=>parseClaims(raw)} disabled={!raw.trim()}
+              style={{alignSelf:"flex-start",padding:"8px 22px",background:"#1a5c34",color:"#fff",border:"none",borderRadius:8,cursor:raw.trim()?"pointer":"not-allowed",fontSize:13,fontWeight:600,opacity:raw.trim()?1:.5}}>
+              Parse JSON
+            </button>
+          </div>
+        )}
+
+        {mode==="upload"&&(
+          <div style={{border:"2px dashed #c0dece",borderRadius:12,padding:"32px 24px",textAlign:"center",background:"#f5fbf8"}}>
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#4aa06e" strokeWidth="1.5" style={{marginBottom:10,display:"block",margin:"0 auto 10px"}}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <div style={{fontWeight:600,color:"#1c2b22",marginBottom:4}}>Drop your file here</div>
+            <div style={{fontSize:12,color:"#7a9982",marginBottom:14}}>Supports <strong>.json</strong> and <strong>.csv</strong> (with header row)</div>
+            <label style={{padding:"8px 22px",background:"#1a5c34",color:"#fff",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:600,display:"inline-block"}}>
+              Browse File
+              <input type="file" accept=".json,.csv" onChange={handleFile} style={{display:"none"}}/>
+            </label>
+          </div>
+        )}
+
+        {parseErr&&<div style={{marginTop:10,padding:"10px 14px",background:"#fde6e4",border:"1.5px solid #f0a09a",borderRadius:9,fontSize:12.5,color:"#8f1e14"}}>{parseErr}</div>}
+
+        {claims.length>0&&!results.length&&(
+          <div style={{marginTop:14,padding:"12px 16px",background:"#eaf6f0",border:"1.5px solid #8ecfb0",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+            <div style={{display:"flex",alignItems:"center",gap:9}}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1a5c34" strokeWidth="2.2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+              <span style={{fontSize:13,fontWeight:600,color:"#1a5c34"}}>{claims.length} claim{claims.length!==1?"s":""} parsed and ready</span>
+              <span style={{fontSize:11,color:"#7a9982"}}>· Claims will be processed one by one</span>
+            </div>
+            <button onClick={runBatch} disabled={running}
+              style={{padding:"9px 24px",background:"linear-gradient(135deg,#1a5c34,#2d7a4a)",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:13,fontWeight:700,boxShadow:"0 4px 14px rgba(26,92,52,.3)",display:"flex",alignItems:"center",gap:8}}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+              Run All ({claims.length})
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Progress bar */}
+      {running&&(
+        <div className="card" style={{marginBottom:16}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1a5c34" strokeWidth="2.2" style={{animation:"spin 1s linear infinite"}}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+              <span style={{fontWeight:600,color:"#1a5c34",fontSize:13}}>Processing claims…</span>
+            </div>
+            <span style={{fontSize:12,color:"#7a9982"}}>{progress}%  ·  {results.filter(r=>r.status==="done"||r.status==="error").length} / {claims.length} done</span>
+          </div>
+          <div style={{height:7,background:"#e4ddd4",borderRadius:4,overflow:"hidden"}}>
+            <div style={{height:"100%",width:progress+"%",background:"linear-gradient(90deg,#4aa06e,#2d7a4a)",borderRadius:4,transition:"width .3s ease"}}/>
+          </div>
+        </div>
+      )}
+
+      {/* Summary KPIs */}
+      {results.length>0&&!running&&(
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:16}}>
+          {[
+            {l:"Total",v:results.length,s:"claims",c:"#1a5c34",bg:"var(--card)",bd:"#e4ddd4"},
+            {l:"Completed",v:done.length,s:"successful",c:"#1a5c34",bg:"#eaf6f0",bd:"#8ecfb0"},
+            {l:"High Risk",v:highRisk,s:"score ≥ 60%",c:"#8f1e14",bg:"#fde6e4",bd:"#f0a09a"},
+            {l:"Avg Risk",v:done.length?avgRisk+"%":"—",s:"across done",c:"#7a3c0a",bg:"#fef0e0",bd:"#f0bc7a"},
+          ].map(k=>(
+            <div key={k.l} style={{background:k.bg,border:"1.5px solid "+k.bd,borderRadius:12,padding:"13px 15px"}}>
+              <div style={{fontSize:9,fontWeight:800,textTransform:"uppercase",letterSpacing:".09em",color:k.c,opacity:.6,marginBottom:3}}>{k.l}</div>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:26,color:k.c,lineHeight:1.1}}>{k.v}</div>
+              <div style={{fontSize:10,color:k.c,opacity:.5,marginTop:2}}>{k.s}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Results table */}
+      {results.length>0&&(
+        <div className="card" style={{padding:0,overflow:"hidden",marginBottom:16}}>
+          <div style={{padding:"14px 18px",borderBottom:"1px solid #e4ddd4",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{width:3,height:14,background:"#4a82b8",borderRadius:2}}/>
+              <span style={{fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:".12em",color:"#4a82b8"}}>Batch Results</span>
+            </div>
+            <span style={{fontSize:11,color:"#7a9982"}}>Click any completed row to expand full breakdown</span>
+          </div>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",minWidth:760}}>
+              <thead>
+                <tr style={{background:"linear-gradient(90deg,#1a5c34,#2d7a4a)"}}>
+                  {["#","ID","Company","Age","Type","Amount","Ins. Status","Run Status","Risk Score","Level",""].map((h,i)=>(
+                    <th key={i} style={{padding:"11px 13px",textAlign:"left",fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:".07em",color:"rgba(255,255,255,.65)",whiteSpace:"nowrap"}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {results.map((r,i)=>{
+                  const sc=r.entry?.riskScore||0;
+                  const bc=sc>=70?"#b83025":sc>=40?"#c07030":"#3d8b5e";
+                  const isExp=expanded===i;
+                  const rs=RS[r.entry?.riskLevel]||RS["Medium"];
+                  return(
+                    <React.Fragment key={i}>
+                      <tr
+                        onClick={()=>r.status==="done"&&sExpanded(isExp?null:i)}
+                        style={{borderBottom:isExp?"none":"1px solid #e4ddd4",background:isExp?"#edf8f3":i%2===0?"var(--card)":"#f8f4ef",cursor:r.status==="done"?"pointer":"default",transition:"background .15s"}}
+                        onMouseEnter={e=>{if(r.status==="done"&&!isExp)e.currentTarget.style.background="#e8f5ed";}}
+                        onMouseLeave={e=>{e.currentTarget.style.background=isExp?"#edf8f3":i%2===0?"var(--card)":"#f8f4ef";}}>
+                        <td style={{padding:"11px 13px",fontSize:11,color:"#7a9982",fontWeight:600}}>{"#"+(i+1)}</td>
+                        <td style={{padding:"11px 13px",fontFamily:"monospace",fontSize:11,color:"#7a9982"}}>{r.entry?.id||"—"}</td>
+                        <td style={{padding:"11px 13px",fontWeight:600,fontSize:12.5,whiteSpace:"nowrap"}}>
+                          <div>{r.claim.company||"—"}</div>
+                          {r.claim.description&&<div style={{fontSize:10,color:"#7a9982",fontWeight:400,marginTop:2,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r.claim.description}>{r.claim.description}</div>}
+                        </td>
+                        <td style={{padding:"11px 13px",fontSize:12,color:"#3d5247"}}>{r.claim.age||"—"}</td>
+                        <td style={{padding:"11px 13px",fontSize:12,color:"#3d5247",whiteSpace:"nowrap"}}>{r.claim.claimType||"—"}</td>
+                        <td style={{padding:"11px 13px",fontSize:12,color:"#3d5247"}}>{r.claim.claimAmount?"$"+parseFloat(r.claim.claimAmount).toLocaleString():"—"}</td>
+                        <td style={{padding:"11px 13px"}}>
+                          {(()=>{
+                            const s=r.claim.insuranceStatus;
+                            const sc2=s==="Approved"?"#1a5c34":s==="Pending"?"#7a3c0a":s==="Under Review"?"#8f1e14":s==="Partial"?"#541d72":"#3d5247";
+                            const bg=s==="Approved"?"#eaf6f0":s==="Pending"?"#fef0e0":s==="Under Review"?"#fde6e4":s==="Partial"?"#f3e6f8":"#f0ebe2";
+                            const bd=s==="Approved"?"#8ecfb0":s==="Pending"?"#f0bc7a":s==="Under Review"?"#f0a09a":s==="Partial"?"#c898e0":"#ddd6ca";
+                            return s?<span style={{fontSize:10,fontWeight:700,background:bg,color:sc2,border:"1px solid "+bd,padding:"2px 9px",borderRadius:10,whiteSpace:"nowrap"}}>{s}</span>:<span style={{color:"#b0a898",fontSize:11}}>—</span>;
+                          })()}
+                        </td>
+                        <td style={{padding:"11px 13px"}}>
+                          {r.status==="running"&&<span style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:11,color:"#7a9982"}}><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{animation:"spin .8s linear infinite"}}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Running</span>}
+                          {r.status==="pending"&&<span style={{fontSize:11,color:"#b0a898"}}>Queued</span>}
+                          {r.status==="done"&&<span style={{fontSize:11,color:"#1a5c34",fontWeight:600}}>Done</span>}
+                          {r.status==="error"&&<span style={{fontSize:11,color:"#b83025",fontWeight:600}} title={r.error}>Error</span>}
+                        </td>
+                        <td style={{padding:"11px 13px"}}>
+                          {r.status==="done"&&(
+                            <div style={{display:"flex",alignItems:"center",gap:7}}>
+                              <div style={{width:60,height:5,background:"#e4ddd4",borderRadius:2,overflow:"hidden",flexShrink:0}}>
+                                <div style={{height:"100%",width:sc+"%",background:bc,borderRadius:2}}/>
+                              </div>
+                              <span style={{fontSize:11,fontWeight:700,color:bc}}>{sc}%</span>
+                            </div>
+                          )}
+                        </td>
+                        <td style={{padding:"11px 13px"}}>{r.status==="done"&&<RiskBadge level={r.entry?.riskLevel}/>}</td>
+                        <td style={{padding:"11px 16px",textAlign:"center",fontSize:13,color:"#7a9982"}}>{r.status==="done"&&(isExp?"▲":"▼")}</td>
+                      </tr>
+
+                      {isExp&&r.entry&&(
+                        <tr>
+                          <td colSpan={10} style={{padding:0,borderBottom:"1px solid #e4ddd4"}}>
+                            <div className="sd" style={{background:"#f2fbf6",borderTop:"2px solid #8ecfb0",padding:"20px 24px",display:"flex",flexDirection:"column",gap:14}}>
+
+                              {/* Description banner */}
+                              {r.entry.description&&(
+                                <div style={{display:"flex",alignItems:"center",gap:8,padding:"9px 14px",background:"#fff",border:"1.5px solid #e4ddd4",borderRadius:10,borderLeft:"4px solid #4a82b8"}}>
+                                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4a82b8" strokeWidth="2.2" style={{flexShrink:0}}><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                                  <span style={{fontSize:12,color:"#3d5247",fontStyle:"italic"}}>{r.entry.description}</span>
+                                </div>
+                              )}
+
+                              {/* Score + details */}
+                              <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                                <div style={{display:"flex",alignItems:"center",gap:12}}>
+                                  <div style={{width:50,height:50,borderRadius:13,background:rs.c,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#fff",flexShrink:0}}>{rs.icon}</div>
+                                  <div>
+                                    <div style={{fontSize:9,textTransform:"uppercase",color:rs.c,fontWeight:700,opacity:.6,marginBottom:3}}>Risk Prediction</div>
+                                    <div style={{fontFamily:"'Playfair Display',serif",fontSize:22,color:rs.c,fontWeight:600}}>{r.entry.riskLevel} Risk</div>
+                                  </div>
+                                </div>
+                                <div style={{textAlign:"center",padding:"8px 18px",background:rs.bg,border:"1.5px solid "+rs.bd,borderRadius:10}}>
+                                  <div style={{fontFamily:"'Playfair Display',serif",fontSize:28,color:rs.c,lineHeight:1}}>{sc}%</div>
+                                  <div style={{fontSize:9,color:rs.c,opacity:.6,marginTop:2}}>Denial Risk</div>
+                                </div>
+                                {[
+                                    ["Company",r.entry.company],
+                                    ["Specialty",r.entry.specialty],
+                                    ["Claim Type",r.entry.claimType],
+                                    ["Ins. Status",r.entry.insuranceStatus||"—"],
+                                    ["Diag Code",r.entry.diagCode],
+                                    ["CPT Code",r.entry.procCode],
+                                    ["Income",r.entry.income?"$"+r.entry.income.toLocaleString():"—"],
+                                    ["Employment",r.entry.employment],
+                                    ["Location",r.entry.location],
+                                    ["Submission",r.entry.submission||r.claim?.submission||"—"],
+                                  ].map(([k,v])=>(
+                                  <div key={k} style={{padding:"8px 14px",background:"#fff",border:"1px solid #e4ddd4",borderRadius:9,flexShrink:0}}>
+                                    <div style={{fontSize:9,color:"#7a9982",fontWeight:700,textTransform:"uppercase",letterSpacing:".07em",marginBottom:2}}>{k}</div>
+                                    <div style={{fontSize:12.5,fontWeight:600,color:"#1c2b22"}}>{v}</div>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {/* Top features */}
+                              {r.entry.topFeatures?.length>0&&(
+                                <div>
+                                  <div style={{fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:".1em",color:"#4a82b8",marginBottom:10}}>Top Risk Factors</div>
+                                  <div style={{display:"flex",flexDirection:"column",gap:7}}>
+                                    {r.entry.topFeatures.map((f,fi)=>{
+                                      const bc2=fi===0?"#b83025":fi===1?"#c07030":"#3d8b5e";
+                                      return(
+                                        <div key={f} style={{display:"flex",alignItems:"center",gap:10}}>
+                                          <span style={{width:20,height:20,borderRadius:6,background:bc2,color:"#fff",fontSize:9,fontWeight:700,display:"inline-flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{fi+1}</span>
+                                          <div style={{minWidth:140,fontSize:12,color:"#3d5247",fontWeight:500,flexShrink:0}}>{f}</div>
+                                          <div style={{flex:1,height:5,background:"#ddd6ca",borderRadius:2,overflow:"hidden"}}>
+                                            <div style={{height:"100%",width:Math.max(15,100-fi*18)+"%",background:bc2,borderRadius:2}}/>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Suggestions */}
+                              {r.entry.suggestions?.length>0&&(
+                                <div>
+                                  <div style={{fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:".1em",color:"#c07030",marginBottom:10}}>Recommendations</div>
+                                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                                    {r.entry.suggestions.map((s,si)=>{
+                                      const pc=s.severity==="High"?"#b83025":s.severity==="Medium"?"#c07030":"#3d8b5e";
+                                      const sev=SEV[s.severity]||SEV["Medium"];
+                                      return(
+                                        <div key={si} style={{background:"#fff",border:"1.5px solid "+sev.bd,borderRadius:10,padding:"12px 14px",borderLeft:"4px solid "+pc}}>
+                                          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:s.message?6:0}}>
+                                            <span style={{width:20,height:20,borderRadius:5,background:pc,color:"#fff",fontSize:10,fontWeight:700,display:"inline-flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{si+1}</span>
+                                            <span style={{fontSize:12.5,fontWeight:700,color:"#1c2b22",flex:1}}>{s.feature||"Risk Factor"}</span>
+                                            {s.severity&&<span style={{fontSize:10,fontWeight:700,background:sev.bg,color:sev.c,border:"1px solid "+sev.bd,padding:"2px 8px",borderRadius:8}}>{s.severity}</span>}
+                                          </div>
+                                          {s.message&&<div style={{fontSize:12,color:"#3d5247",lineHeight:1.55,paddingLeft:28,marginBottom:4}}>{s.message}</div>}
+                                          {s.action&&<div style={{display:"flex",alignItems:"flex-start",gap:6,paddingLeft:28}}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4aa06e" strokeWidth="2.5" style={{flexShrink:0,marginTop:2}}><path d="M5 12l5 5L20 7"/></svg><span style={{fontSize:11.5,color:"#1a5c34",fontWeight:500}}>{s.action}</span></div>}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Projected */}
+                              {r.entry.suggestions?.length>0&&r.entry.projectedRisk!=null&&(()=>{
+                                const red=Math.max(0,sc-Math.round(r.entry.projectedRisk));
+                                const ok=red>0;
+                                return(
+                                  <div style={{background:ok?"linear-gradient(135deg,#1a5c34,#2d7a4a)":"linear-gradient(135deg,#321408,#5e2a10)",borderRadius:12,padding:"14px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+                                    <div>
+                                      <div style={{fontSize:9,color:"rgba(255,255,255,.4)",textTransform:"uppercase",letterSpacing:".09em",fontWeight:700,marginBottom:3}}>Apply recommendations</div>
+                                      {ok?<div style={{fontSize:13,color:"#fff",fontWeight:600}}>Risk: <span style={{color:"#ffaa7a"}}>{sc}%</span> to <span style={{color:"#5dffa0"}}>{Math.round(r.entry.projectedRisk)}%</span></div>
+                                         :<div style={{fontSize:13,color:"#f5cc96",fontWeight:600}}>Risk stays at <span style={{color:"#ffaa7a"}}>{sc}%</span></div>}
+                                    </div>
+                                    <div style={{textAlign:"right"}}>
+                                      <div style={{fontSize:9,color:"rgba(255,255,255,.35)",textTransform:"uppercase",marginBottom:2}}>Reduction</div>
+                                      <div style={{fontFamily:"'Playfair Display',serif",fontSize:28,color:ok?"#5dffa0":"#f5cc96",lineHeight:1}}>{red}%</div>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* CSV template download */}
+      <div style={{padding:"12px 16px",background:"var(--card)",border:"1.5px solid #e4ddd4",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+        <div style={{fontSize:12,color:"#7a9982"}}>Need a template? Download a CSV with all required column headers pre-filled.</div>
+        <button onClick={()=>{
+          const h=["company","age","gender","marital","employment","income","claimAmount","claimDate","claimType","diagCode","procCode","specialty","location","submission"];
+          const s=["UnitedHealth Group","52","Male","Married","Full-Time","78000","14500","2026-03-01","Inpatient","I25.10","70553","Cardiology","TX","Electronic"];
+          const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([[h.join(","),s.join(",")].join("\n")],{type:"text/csv"}));a.download="remedi_batch_template.csv";a.click();
+        }} style={{padding:"7px 18px",background:"#1a5c34",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:12.5,fontWeight:600,display:"flex",alignItems:"center",gap:7}}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download CSV Template
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ────────────────────────────── ROOT
 export default function App(){
   const[page,sPage]=useState("entry");
@@ -798,8 +1260,9 @@ export default function App(){
     {id:"entry",label:"New Entry",icon:<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>},
     {id:"analytics",label:"Insights",icon:<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>},
     {id:"history",label:"Claim History",icon:<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>},
+    {id:"batch",label:"Batch Upload",icon:<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M12 18v-6M9 15l3 3 3-3"/></svg>},
   ];
-  const titles={entry:"New Claim Entry",analytics:"Insights",history:"Claim History"};
+  const titles={entry:"New Claim Entry",analytics:"Insights",history:"Claim History",batch:"Batch Upload"};
 
   return(
     <>
@@ -904,6 +1367,7 @@ export default function App(){
             {page==="entry"&&<EntryPage onSubmit={addH}/>}
             {page==="analytics"&&<AnalyticsPage history={history}/>}
             {page==="history"&&<HistoryPage history={history} onClear={()=>{sHistory([]);try{localStorage.removeItem("rcm_claim_history");}catch{}}}/>}
+            {page==="batch"&&<BatchPage onBatchSubmit={addH}/>}
           </div>
         </main>
       </div>
