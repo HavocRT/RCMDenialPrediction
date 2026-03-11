@@ -59,3 +59,9 @@ Blue Cross Blue Shield,52000.0,2026-03-10,C50.919,85025,58,Female,Oncology,Speci
 Humana,8500.0,2026-03-10,F32.9,90837,29,Non-Binary,Psychiatry,Mental Health,Electronic,Partial,35000,Single,Part-Time,CA,Paid,1,40.0,Medium,2026-03-10
 Highmark Health,2200.0,2026-03-10,K21.0,43239,47,Male,Gastroenterology,Dental,Electronic,Partial,53000,Divorced,Full-Time,PA,Rejected,0,46.0,Medium,2026-03-10
 UnitedHealth Group,45000.0,2026-03-10,I25.10,70553,62,Male,Cardiology,Inpatient,Electronic,Pending,55000,Married,Retired,TX,Rejected,0,67.0,High,2026-03-10
+Centene Corporation,180.0,2026-03-10,Z12.31,92004,22,Female,Ophthalmology,Vision,Electronic,Approved,18000,Single,Student,OH,Paid,1,63.0,High,2026-03-10
+UnitedHealth Group,45000.0,2026-03-10,I25.10,70553,62,Male,Cardiology,Inpatient,Electronic,Pending,55000,Married,Retired,TX,Rejected,0,48.0,Medium,2026-03-10
+Humana,8500.0,2026-03-10,F32.9,90837,29,Non-Binary,Psychiatry,Mental Health,Electronic,Partial,35000,Single,Part-Time,CA,Rejected,0,47.0,Medium,2026-03-10
+Highmark Health,2200.0,2026-03-10,K21.0,43239,47,Male,Gastroenterology,Dental,Electronic,Partial,53000,Divorced,Full-Time,PA,Paid,1,47.0,Medium,2026-03-10
+Molina Healthcare,78000.0,2026-03-10,C50.919,66984,67,Female,Surgery,Inpatient,Electronic,Under Review,28000,Widowed,Retired,FL,Rejected,0,66.0,High,2026-03-10
+UnitedHealth Group,1254.57,2026-03-11,I10,99285,55,Female,Neurology,Outpatient,Electronic,Pending,212045,Married,Full-Time,IL,Paid,1,35.0,Low,2026-03-11

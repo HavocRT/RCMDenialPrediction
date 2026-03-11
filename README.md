@@ -274,6 +274,16 @@ Build a **minimum viable prototype** that demonstrates:
 
 ------------------------------------------------------------------------
 
+## how-to-run
+
+Launch backend:
+- uvicorn main:app --reload --port 8000
+
+Launch frontend:
+- npm run dev
+
+------------------------------------------------------------------------
+
 ## License
 
 This project is developed for educational and hackathon purposes.
